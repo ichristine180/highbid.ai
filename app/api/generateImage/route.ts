@@ -270,6 +270,21 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     console.error("Error generating image:", error);
+
+    // Update generation record as failed if it was created
+    if (generationId) {
+      await supabase
+        .from("image_generations")
+        .update({
+          status: "failed",
+          error_message:
+            error instanceof Error
+              ? error.message
+              : "Failed to generate image. Please try again.",
+        })
+        .eq("id", generationId);
+    }
+
     return NextResponse.json(
       {
         error:
