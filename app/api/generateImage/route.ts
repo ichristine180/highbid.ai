@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createServerClient } from "@supabase/ssr";
 
 const pollForTaskResult = async (
   jobId: string,
@@ -74,6 +75,35 @@ const pollForTaskResult = async (
 };
 
 export async function POST(request: NextRequest) {
+  let supabaseResponse = NextResponse.next({
+    request,
+  });
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) =>
+            request.cookies.set(name, value)
+          );
+          supabaseResponse = NextResponse.next({
+            request,
+          });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            supabaseResponse.cookies.set(name, value, options)
+          );
+        },
+      },
+    }
+  );
+
+  let generationId: string | null = null;
+
   try {
     const { prompt, size } = await request.json();
 
@@ -81,6 +111,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "Prompt is required" },
         { status: 400 }
+      );
+    }
+
+    // Get authenticated user
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
       );
     }
 
@@ -106,6 +148,40 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
+
+    // Calculate cost based on image size
+    const costMap: { [key: string]: number } = {
+      "512x512": 0.30,
+      "1024x1024": 0.50,
+      "1024x1792": 0.70,
+      "1792x1024": 0.70,
+    };
+    const cost = costMap[size] || 0.50;
+
+    // Create initial generation record
+    const { data: generation, error: insertError } = await supabase
+      .from("image_generations")
+      .insert({
+        user_id: user.id,
+        prompt,
+        size,
+        status: "generating",
+        cost,
+      })
+      .select()
+      .single();
+
+    if (insertError || !generation) {
+      console.error("Error creating generation record:", insertError);
+      return NextResponse.json(
+        { error: "Failed to create generation record" },
+        { status: 500 }
+      );
+    }
+
+    // Store generation ID for error handling
+    generationId = generation.id;
+
     const inputData = JSON.stringify({
       imagePrompt: `${prompt} with this size ${size}`,
     });
@@ -126,6 +202,15 @@ export async function POST(request: NextRequest) {
     );
 
     if (!submitResponse.ok) {
+      // Update generation record as failed
+      await supabase
+        .from("image_generations")
+        .update({
+          status: "failed",
+          error_message: `Failed to submit task: ${submitResponse.status}`,
+        })
+        .eq("id", generation.id);
+
       return NextResponse.json(
         { error: `Failed to submit task: ${submitResponse.status}` },
         { status: submitResponse.status }
@@ -134,7 +219,17 @@ export async function POST(request: NextRequest) {
 
     await submitResponse.json();
     const result = await pollForTaskResult(JOB_ID, API_TOKEN);
+
     if (typeof result === "object" && "success" in result && !result.success) {
+      // Update generation record as failed
+      await supabase
+        .from("image_generations")
+        .update({
+          status: "failed",
+          error_message: result.message,
+        })
+        .eq("id", generation.id);
+
       return NextResponse.json(
         {
           success: false,
@@ -143,12 +238,31 @@ export async function POST(request: NextRequest) {
         { status: 200 }
       );
     }
+
     if (result && typeof result === "string") {
+      // Update generation record as completed
+      await supabase
+        .from("image_generations")
+        .update({
+          status: "completed",
+          image_url: result,
+        })
+        .eq("id", generation.id);
+
       return NextResponse.json({
         success: true,
         imageUrl: result,
       });
     } else {
+      // Update generation record as failed
+      await supabase
+        .from("image_generations")
+        .update({
+          status: "failed",
+          error_message: "No image URL found in response",
+        })
+        .eq("id", generation.id);
+
       return NextResponse.json(
         { error: "No image URL found in response" },
         { status: 500 }

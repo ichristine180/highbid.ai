@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import {
   Card,
   CardContent,
@@ -19,14 +20,195 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Download } from "lucide-react";
+import { Loader2, Download, Image as ImageIcon, Clock, CheckCircle2, XCircle } from "lucide-react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+
+interface Generation {
+  id: string;
+  prompt: string;
+  size: string;
+  image_url: string | null;
+  status: "pending" | "generating" | "completed" | "failed";
+  cost: number;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 export default function Generate() {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState("1024x1024");
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [progressMessage, setProgressMessage] = useState("");
+  const [generations, setGenerations] = useState<Generation[]>([]);
+  const [isLoadingGenerations, setIsLoadingGenerations] = useState(true);
   const { toast } = useToast();
+
+  // Fetch generations
+  const fetchGenerations = async () => {
+    try {
+      const response = await fetch("/api/generations");
+      if (response.ok) {
+        const data = await response.json();
+        setGenerations(data.generations || []);
+      }
+    } catch (error) {
+      console.error("Error fetching generations:", error);
+    } finally {
+      setIsLoadingGenerations(false);
+    }
+  };
+
+  // Fetch generations on mount
+  useEffect(() => {
+    fetchGenerations();
+  }, []);
+
+  // Simulate progress during image generation (~3 minutes)
+  useEffect(() => {
+    if (!isGenerating) {
+      setProgress(0);
+      setProgressMessage("");
+      return;
+    }
+
+    setProgress(0);
+    setProgressMessage("Initializing...");
+
+    const intervals: NodeJS.Timeout[] = [];
+
+    // Stage 1: Initializing (0-15%) - First 20 seconds
+    intervals.push(
+      setTimeout(() => {
+        setProgress(5);
+        setProgressMessage("Connecting to AI service...");
+      }, 3000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(10);
+        setProgressMessage("Processing your prompt...");
+      }, 8000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(15);
+        setProgressMessage("Analyzing prompt details...");
+      }, 15000)
+    );
+
+    // Stage 2: Processing (15-30%) - 20-50 seconds
+    intervals.push(
+      setTimeout(() => {
+        setProgress(20);
+        setProgressMessage("Starting image generation...");
+      }, 25000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(25);
+        setProgressMessage("Building initial structure...");
+      }, 35000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(30);
+        setProgressMessage("Generating base composition...");
+      }, 45000)
+    );
+
+    // Stage 3: Generating (30-60%) - 50-90 seconds
+    intervals.push(
+      setTimeout(() => {
+        setProgress(35);
+        setProgressMessage("Creating image layers...");
+      }, 55000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(42);
+        setProgressMessage("Adding details and textures...");
+      }, 70000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(50);
+        setProgressMessage("Enhancing colors and lighting...");
+      }, 85000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(58);
+        setProgressMessage("Refining visual elements...");
+      }, 100000)
+    );
+
+    // Stage 4: Refining (60-80%) - 90-140 seconds
+    intervals.push(
+      setTimeout(() => {
+        setProgress(65);
+        setProgressMessage("Processing fine details...");
+      }, 115000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(72);
+        setProgressMessage("Optimizing composition...");
+      }, 130000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(78);
+        setProgressMessage("Applying artistic refinements...");
+      }, 145000)
+    );
+
+    // Stage 5: Finalizing (80-95%) - 140-170 seconds
+    intervals.push(
+      setTimeout(() => {
+        setProgress(83);
+        setProgressMessage("Finalizing image quality...");
+      }, 155000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(88);
+        setProgressMessage("Applying final touches...");
+      }, 165000)
+    );
+
+    intervals.push(
+      setTimeout(() => {
+        setProgress(93);
+        setProgressMessage("Almost done...");
+      }, 175000)
+    );
+
+    // Cleanup function
+    return () => {
+      intervals.forEach(clearTimeout);
+    };
+  }, [isGenerating]);
 
   const handleDownload = async () => {
     if (!generatedImage) return;
@@ -79,8 +261,6 @@ export default function Generate() {
       });
     } catch (error) {
       console.error("Error downloading image:", error);
-
-      // Fallback: Open image in new tab if direct download fails
       try {
         window.open(generatedImage, '_blank');
         toast({
@@ -106,6 +286,7 @@ export default function Generate() {
       });
       return;
     }
+    setGeneratedImage(null);
     setIsGenerating(true);
     try {
       toast({
@@ -139,6 +320,8 @@ export default function Generate() {
         return;
       }
       if (data.imageUrl && typeof data.imageUrl === "string") {
+        setProgress(100);
+        setProgressMessage("Complete!");
         setGeneratedImage(data.imageUrl);
         toast({
           title: "Success",
@@ -160,6 +343,8 @@ export default function Generate() {
       setGeneratedImage(null);
     } finally {
       setIsGenerating(false);
+      // Refresh generations list
+      fetchGenerations();
     }
   };
 
@@ -255,9 +440,20 @@ export default function Generate() {
                 </Button>
               </div>
             ) : (
-              <div className="aspect-square rounded-lg border-2 border-dashed flex items-center justify-center text-muted-foreground">
+              <div className="aspect-square rounded-lg border-2 border-dashed flex flex-col items-center justify-center text-muted-foreground p-8">
                 {isGenerating ? (
-                  <Loader2 className="h-12 w-12 animate-spin" />
+                  <div className="w-full max-w-md space-y-6">
+                    <Loader2 className="h-12 w-12 animate-spin mx-auto" />
+                    <div className="space-y-2">
+                      <Progress value={progress} className="w-full" />
+                      <p className="text-sm text-center font-medium">
+                        {progressMessage}
+                      </p>
+                      <p className="text-xs text-center text-muted-foreground">
+                        {progress}% complete
+                      </p>
+                    </div>
+                  </div>
                 ) : (
                   <p>No image generated yet</p>
                 )}
@@ -266,6 +462,98 @@ export default function Generate() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Generations History */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Generation History</CardTitle>
+          <CardDescription>
+            Your recent image generations
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isLoadingGenerations ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : generations.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <ImageIcon className="h-12 w-12 mx-auto mb-2 opacity-50" />
+              <p>No generations yet. Create your first image above!</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Prompt</TableHead>
+                    <TableHead>Size</TableHead>
+                    <TableHead>Cost</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Image</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {generations.map((gen) => (
+                    <TableRow key={gen.id}>
+                      <TableCell>
+                        {gen.status === "completed" && (
+                          <Badge variant="default" className="bg-green-500">
+                            <CheckCircle2 className="h-3 w-3 mr-1" />
+                            Completed
+                          </Badge>
+                        )}
+                        {gen.status === "generating" && (
+                          <Badge variant="secondary">
+                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            Generating
+                          </Badge>
+                        )}
+                        {gen.status === "failed" && (
+                          <Badge variant="destructive">
+                            <XCircle className="h-3 w-3 mr-1" />
+                            Failed
+                          </Badge>
+                        )}
+                        {gen.status === "pending" && (
+                          <Badge variant="outline">
+                            <Clock className="h-3 w-3 mr-1" />
+                            Pending
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="max-w-xs truncate" title={gen.prompt}>
+                        {gen.prompt}
+                      </TableCell>
+                      <TableCell>{gen.size}</TableCell>
+                      <TableCell>${gen.cost.toFixed(2)}</TableCell>
+                      <TableCell>
+                        {new Date(gen.created_at).toLocaleDateString()}{" "}
+                        {new Date(gen.created_at).toLocaleTimeString()}
+                      </TableCell>
+                      <TableCell>
+                        {gen.image_url && gen.status === "completed" ? (
+                          <a
+                            href={gen.image_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-500 hover:underline"
+                          >
+                            View
+                          </a>
+                        ) : (
+                          <span className="text-muted-foreground">N/A</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
