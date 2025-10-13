@@ -81,8 +81,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Record the transaction
-    const { error: transactionError } = await supabase
+    // Record the transaction using service role client
+    const { error: transactionError } = await supabaseAdmin
       .from("transactions")
       .insert({
         user_id: user.id,
