@@ -48,6 +48,8 @@ const pollForTaskResult = async (
           try {
             const proofData = JSON.parse(task.job_proof);
             if (proofData.imageUrl && proofData.imageUrl.trim() !== "") {
+              // we include payment at this stage
+              
               return proofData.imageUrl;
             }
           } catch (parseError) {
@@ -149,14 +151,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Calculate cost based on image size
-    const costMap: { [key: string]: number } = {
-      "512x512": 0.30,
-      "1024x1024": 0.50,
-      "1024x1792": 0.70,
-      "1792x1024": 0.70,
-    };
-    const cost = costMap[size] || 0.50;
+    // Fetch dynamic pricing from database
+    const { data: pricingData, error: pricingError } = await supabase
+      .from("pricing_settings")
+      .select("price")
+      .eq("size_key", size)
+      .single();
+
+    let cost = 0.50; // Default fallback
+    if (pricingError) {
+      console.error("Error fetching pricing:", pricingError);
+      // Use default pricing if fetch fails
+    } else if (pricingData) {
+      cost = parseFloat(pricingData.price.toString());
+    }
 
     // Create initial generation record
     const { data: generation, error: insertError } = await supabase
@@ -252,6 +260,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         imageUrl: result,
+        generation_id: generation.id,
       });
     } else {
       // Update generation record as failed

@@ -43,6 +43,12 @@ interface Generation {
   updated_at: string;
 }
 
+interface PricingSetting {
+  size_key: string;
+  price: number;
+  description: string;
+}
+
 export default function Generate() {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState("1024x1024");
@@ -52,6 +58,8 @@ export default function Generate() {
   const [progressMessage, setProgressMessage] = useState("");
   const [generations, setGenerations] = useState<Generation[]>([]);
   const [isLoadingGenerations, setIsLoadingGenerations] = useState(true);
+  const [pricing, setPricing] = useState<PricingSetting[]>([]);
+  const [userBalance, setUserBalance] = useState<number | null>(null);
   const { toast } = useToast();
 
   // Fetch generations
@@ -69,9 +77,43 @@ export default function Generate() {
     }
   };
 
-  // Fetch generations on mount
+  // Fetch pricing
+  const fetchPricing = async () => {
+    try {
+      const response = await fetch("/api/pricing");
+      if (response.ok) {
+        const data = await response.json();
+        setPricing(data.pricing || []);
+      }
+    } catch (error) {
+      console.error("Error fetching pricing:", error);
+    }
+  };
+
+  // Fetch user balance
+  const fetchUserBalance = async () => {
+    try {
+      const response = await fetch("/api/balance");
+      if (response.ok) {
+        const data = await response.json();
+        setUserBalance(data.balance || 0);
+      }
+    } catch (error) {
+      console.error("Error fetching balance:", error);
+    }
+  };
+
+  // Get current price for selected size
+  const getCurrentPrice = () => {
+    const pricingItem = pricing.find(p => p.size_key === size);
+    return pricingItem?.price || 0;
+  };
+
+  // Fetch data on mount
   useEffect(() => {
     fetchGenerations();
+    fetchPricing();
+    fetchUserBalance();
   }, []);
 
   // Simulate progress during image generation (~3 minutes)
@@ -86,8 +128,6 @@ export default function Generate() {
     setProgressMessage("Initializing...");
 
     const intervals: NodeJS.Timeout[] = [];
-
-    // Stage 1: Initializing (0-15%) - First 20 seconds
     intervals.push(
       setTimeout(() => {
         setProgress(5);
@@ -286,6 +326,18 @@ export default function Generate() {
       });
       return;
     }
+
+    // Check if user has sufficient balance
+    const currentPrice = getCurrentPrice();
+    if (userBalance === null || userBalance < currentPrice) {
+      toast({
+        title: "Insufficient Balance",
+        description: `You need $${currentPrice.toFixed(2)} to generate this image. Please top up your account.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
     setGeneratedImage(null);
     setIsGenerating(true);
     try {
@@ -323,10 +375,46 @@ export default function Generate() {
         setProgress(100);
         setProgressMessage("Complete!");
         setGeneratedImage(data.imageUrl);
-        toast({
-          title: "Success",
-          description: "Image generated successfully!",
-        });
+
+        // Charge the user
+        const currentPrice = getCurrentPrice();
+        try {
+          const chargeResponse = await fetch("/api/charge", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              amount: currentPrice,
+              description: `Image generation (${size})`,
+              generation_id: data.generation_id || null,
+            }),
+          });
+
+          if (chargeResponse.ok) {
+            const chargeData = await chargeResponse.json();
+            setUserBalance(chargeData.newBalance);
+            toast({
+              title: "Success",
+              description: `Image generated successfully! $${currentPrice.toFixed(2)} charged.`,
+            });
+          } else {
+            toast({
+              title: "Success",
+              description: "Image generated successfully!",
+            });
+          }
+        } catch (chargeError) {
+          console.error("Error charging user:", chargeError);
+          // Still show success for image generation
+          toast({
+            title: "Success",
+            description: "Image generated successfully!",
+          });
+        }
+
+        // Refresh balance
+        fetchUserBalance();
       } else {
         throw new Error("No image URL found in response");
       }
@@ -384,21 +472,63 @@ export default function Generate() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="512x512">512 × 512</SelectItem>
-                  <SelectItem value="1024x1024">1024 × 1024</SelectItem>
-                  <SelectItem value="1024x1792">
-                    1024 × 1792 (Portrait)
-                  </SelectItem>
-                  <SelectItem value="1792x1024">
-                    1792 × 1024 (Landscape)
-                  </SelectItem>
+                  {pricing.length > 0 ? (
+                    pricing.map((p) => (
+                      <SelectItem key={p.size_key} value={p.size_key}>
+                        {p.size_key} - ${p.price.toFixed(2)}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <>
+                      <SelectItem value="512x512">512 × 512</SelectItem>
+                      <SelectItem value="1024x1024">1024 × 1024</SelectItem>
+                      <SelectItem value="1024x1792">
+                        1024 × 1792 (Portrait)
+                      </SelectItem>
+                      <SelectItem value="1792x1024">
+                        1792 × 1024 (Landscape)
+                      </SelectItem>
+                    </>
+                  )}
                 </SelectContent>
               </Select>
             </div>
 
+            {/* Balance and Pricing Display */}
+            <div className="rounded-lg border p-4 space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-muted-foreground">Your Balance:</span>
+                <span className="text-lg font-semibold">
+                  {userBalance === null ? (
+                    <Loader2 className="h-4 w-4 animate-spin inline" />
+                  ) : (
+                    `$${userBalance.toFixed(2)}`
+                  )}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-muted-foreground">Generation Cost:</span>
+                <span className="text-lg font-semibold text-primary">
+                  ${getCurrentPrice().toFixed(2)}
+                </span>
+              </div>
+              <div className="border-t pt-2 mt-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-medium">Balance After:</span>
+                  <span className="text-lg font-bold">
+                    {userBalance === null ? (
+                      <Loader2 className="h-4 w-4 animate-spin inline" />
+                    ) : (
+                      `$${Math.max(0, userBalance - getCurrentPrice()).toFixed(2)}`
+                    )}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             <Button
               onClick={handleGenerate}
-              disabled={isGenerating}
+              disabled={isGenerating || userBalance === null || userBalance < getCurrentPrice()}
               className="w-full"
             >
               {isGenerating ? (
@@ -406,6 +536,8 @@ export default function Generate() {
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Generating...
                 </>
+              ) : userBalance !== null && userBalance < getCurrentPrice() ? (
+                "Insufficient Balance"
               ) : (
                 "Generate Image"
               )}
@@ -491,7 +623,7 @@ export default function Generate() {
                     <TableHead>Size</TableHead>
                     <TableHead>Cost</TableHead>
                     <TableHead>Date</TableHead>
-                    <TableHead>Image</TableHead>
+              
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -532,20 +664,7 @@ export default function Generate() {
                         {new Date(gen.created_at).toLocaleDateString()}{" "}
                         {new Date(gen.created_at).toLocaleTimeString()}
                       </TableCell>
-                      <TableCell>
-                        {gen.image_url && gen.status === "completed" ? (
-                          <a
-                            href={gen.image_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-500 hover:underline"
-                          >
-                            View
-                          </a>
-                        ) : (
-                          <span className="text-muted-foreground">N/A</span>
-                        )}
-                      </TableCell>
+                      
                     </TableRow>
                   ))}
                 </TableBody>

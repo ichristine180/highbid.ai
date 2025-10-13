@@ -6,11 +6,22 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Users, Image, DollarSign, Activity, LogOut, Loader2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Users, Image, DollarSign, Activity, LogOut, Loader2, Settings } from 'lucide-react';
 import { getUserStats, type UserData } from '@/lib/admin-actions';
+import { useToast } from '@/hooks/use-toast';
+
+interface PricingSetting {
+  id: string;
+  size_key: string;
+  price: number;
+  description: string;
+}
 
 export default function AdminDashboard() {
   const router = useRouter();
+  const { toast } = useToast();
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({
     totalUsers: 0,
@@ -18,6 +29,9 @@ export default function AdminDashboard() {
     activeUsers: 0,
     users: [] as UserData[]
   });
+  const [pricing, setPricing] = useState<PricingSetting[]>([]);
+  const [pricingLoading, setPricingLoading] = useState(true);
+  const [savingPricing, setSavingPricing] = useState(false);
 
   useEffect(() => {
     // Check if admin is authenticated
@@ -27,8 +41,9 @@ export default function AdminDashboard() {
       return;
     }
 
-    // Fetch user statistics
+    // Fetch user statistics and pricing
     fetchUserData();
+    fetchPricing();
   }, [router]);
 
   const fetchUserData = async () => {
@@ -39,6 +54,62 @@ export default function AdminDashboard() {
       console.error('Error fetching user stats:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchPricing = async () => {
+    try {
+      const response = await fetch('/api/pricing');
+      if (response.ok) {
+        const data = await response.json();
+        setPricing(data.pricing || []);
+      }
+    } catch (error) {
+      console.error('Error fetching pricing:', error);
+    } finally {
+      setPricingLoading(false);
+    }
+  };
+
+  const handlePriceChange = (sizeKey: string, newPrice: string) => {
+    const price = parseFloat(newPrice);
+    if (isNaN(price) || price < 0) return;
+
+    setPricing(prev =>
+      prev.map(p =>
+        p.size_key === sizeKey ? { ...p, price } : p
+      )
+    );
+  };
+
+  const handleSavePricing = async () => {
+    setSavingPricing(true);
+    try {
+      const response = await fetch('/api/pricing', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ pricing }),
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Success',
+          description: 'Pricing updated successfully',
+        });
+      } else {
+        throw new Error('Failed to update pricing');
+      }
+    } catch (error) {
+      console.error('Error updating pricing:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update pricing',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingPricing(false);
     }
   };
 
@@ -145,6 +216,68 @@ export default function AdminDashboard() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Pricing Settings */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5" />
+              Image Generation Pricing
+            </CardTitle>
+            <CardDescription>
+              Set the cost per image generation based on size
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {pricingLoading ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {pricing.map((item) => (
+                    <div key={item.id} className="space-y-2">
+                      <Label htmlFor={item.size_key}>
+                        {item.size_key}
+                        <span className="text-xs text-muted-foreground block">
+                          {item.description}
+                        </span>
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm">$</span>
+                        <Input
+                          id={item.size_key}
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={item.price}
+                          onChange={(e) => handlePriceChange(item.size_key, e.target.value)}
+                          className="w-full"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    onClick={handleSavePricing}
+                    disabled={savingPricing}
+                  >
+                    {savingPricing ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      'Save Pricing'
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
