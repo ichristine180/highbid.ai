@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -8,30 +8,50 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Copy, Trash2, TrendingUp, Activity } from 'lucide-react';
+import { Plus, Copy, Trash2, TrendingUp, Activity, Loader2, Eye, EyeOff } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface Token {
   id: string;
   name: string;
-  key: string;
-  created: string;
-  lastUsed: string;
+  token: string;
+  created_at: string;
+  last_used_at: string | null;
 }
 
 export default function ApiTokens() {
   const { toast } = useToast();
-  const [tokens, setTokens] = useState<Token[]>([
-    {
-      id: '1',
-      name: 'Production API',
-      key: 'sk_live_abc123...',
-      created: '2025-01-10',
-      lastUsed: '2025-01-15',
-    },
-  ]);
+  const [tokens, setTokens] = useState<Token[]>([]);
   const [newTokenName, setNewTokenName] = useState('');
   const [showNewToken, setShowNewToken] = useState(false);
+  const [newlyCreatedToken, setNewlyCreatedToken] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [visibleTokens, setVisibleTokens] = useState<Set<string>>(new Set());
+
+  // Fetch tokens on mount
+  useEffect(() => {
+    fetchTokens();
+  }, []);
+
+  const fetchTokens = async () => {
+    try {
+      const response = await fetch('/api/api-tokens');
+      if (response.ok) {
+        const data = await response.json();
+        setTokens(data.tokens || []);
+      }
+    } catch (error) {
+      console.error('Error fetching tokens:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load API tokens',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Mock data for charts
   const dailyUsageData = [
@@ -51,7 +71,7 @@ export default function ApiTokens() {
     { category: 'API Calls', cost: 15 },
   ];
 
-  const handleCreateToken = () => {
+  const handleCreateToken = async () => {
     if (!newTokenName.trim()) {
       toast({
         title: 'Error',
@@ -61,21 +81,38 @@ export default function ApiTokens() {
       return;
     }
 
-    const newToken: Token = {
-      id: Date.now().toString(),
-      name: newTokenName,
-      key: `sk_live_${Math.random().toString(36).substring(2, 15)}`,
-      created: new Date().toISOString().split('T')[0],
-      lastUsed: 'Never',
-    };
+    setCreating(true);
+    try {
+      const response = await fetch('/api/api-tokens', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: newTokenName }),
+      });
 
-    setTokens([...tokens, newToken]);
-    setNewTokenName('');
-    setShowNewToken(false);
-    toast({
-      title: 'Success',
-      description: 'API token created successfully',
-    });
+      if (response.ok) {
+        const data = await response.json();
+        setNewlyCreatedToken(data.token.token);
+        setTokens([data.token, ...tokens]);
+        setNewTokenName('');
+        toast({
+          title: 'Success',
+          description: 'API token created successfully. Make sure to copy it now!',
+        });
+      } else {
+        throw new Error('Failed to create token');
+      }
+    } catch (error) {
+      console.error('Error creating token:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to create API token',
+        variant: 'destructive',
+      });
+    } finally {
+      setCreating(false);
+    }
   };
 
   const handleCopyToken = (key: string) => {
@@ -86,11 +123,57 @@ export default function ApiTokens() {
     });
   };
 
-  const handleDeleteToken = (id: string) => {
-    setTokens(tokens.filter(t => t.id !== id));
-    toast({
-      title: 'Success',
-      description: 'Token deleted successfully',
+  const handleDeleteToken = async (id: string) => {
+    try {
+      const response = await fetch('/api/api-tokens', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ id }),
+      });
+
+      if (response.ok) {
+        setTokens(tokens.filter(t => t.id !== id));
+        toast({
+          title: 'Success',
+          description: 'Token deleted successfully',
+        });
+      } else {
+        throw new Error('Failed to delete token');
+      }
+    } catch (error) {
+      console.error('Error deleting token:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to delete API token',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const toggleTokenVisibility = (id: string) => {
+    setVisibleTokens(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+      } else {
+        newSet.add(id);
+      }
+      return newSet;
+    });
+  };
+
+  const maskToken = (token: string) => {
+    if (token.length < 12) return token;
+    return `${token.substring(0, 10)}...${token.substring(token.length - 4)}`;
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
     });
   };
 
@@ -114,21 +197,62 @@ export default function ApiTokens() {
             <CardDescription>Generate a new API key for your application</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="tokenName">Token Name</Label>
-              <Input
-                id="tokenName"
-                placeholder="e.g., Production API"
-                value={newTokenName}
-                onChange={(e) => setNewTokenName(e.target.value)}
-              />
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={handleCreateToken}>Create Token</Button>
-              <Button variant="outline" onClick={() => setShowNewToken(false)}>
-                Cancel
-              </Button>
-            </div>
+            {newlyCreatedToken ? (
+              <>
+                <div className="space-y-2">
+                  <Label>Your New API Token</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={newlyCreatedToken}
+                      readOnly
+                      className="font-mono text-sm"
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={() => handleCopyToken(newlyCreatedToken)}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <p className="text-sm text-amber-600">
+                    ⚠️ Make sure to copy this token now. You won't be able to see it again!
+                  </p>
+                </div>
+                <Button onClick={() => {
+                  setShowNewToken(false);
+                  setNewlyCreatedToken(null);
+                }}>
+                  Done
+                </Button>
+              </>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="tokenName">Token Name</Label>
+                  <Input
+                    id="tokenName"
+                    placeholder="e.g., Production API"
+                    value={newTokenName}
+                    onChange={(e) => setNewTokenName(e.target.value)}
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={handleCreateToken} disabled={creating}>
+                    {creating ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Creating...
+                      </>
+                    ) : (
+                      'Create Token'
+                    )}
+                  </Button>
+                  <Button variant="outline" onClick={() => setShowNewToken(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
       )}
@@ -202,49 +326,76 @@ export default function ApiTokens() {
           <CardDescription>Keep your tokens secure and never share them publicly</CardDescription>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Token</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead>Last Used</TableHead>
-                <TableHead className="w-[100px]">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {tokens.map((token) => (
-                <TableRow key={token.id}>
-                  <TableCell className="font-medium">{token.name}</TableCell>
-                  <TableCell>
-                    <code className="text-sm bg-muted px-2 py-1 rounded">{token.key}</code>
-                  </TableCell>
-                  <TableCell>{token.created}</TableCell>
-                  <TableCell>
-                    <Badge variant="secondary">{token.lastUsed}</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-2">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        onClick={() => handleCopyToken(token.key)}
-                      >
-                        <Copy className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        onClick={() => handleDeleteToken(token.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : tokens.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <p>No API tokens yet. Create one to get started!</p>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Token</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead>Last Used</TableHead>
+                  <TableHead className="w-[140px]">Actions</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {tokens.map((token) => {
+                  const isVisible = visibleTokens.has(token.id);
+                  return (
+                    <TableRow key={token.id}>
+                      <TableCell className="font-medium">{token.name}</TableCell>
+                      <TableCell>
+                        <code className="text-sm bg-muted px-2 py-1 rounded">
+                          {isVisible ? token.token : maskToken(token.token)}
+                        </code>
+                      </TableCell>
+                      <TableCell>{formatDate(token.created_at)}</TableCell>
+                      <TableCell>
+                        <Badge variant="secondary">
+                          {token.last_used_at ? formatDate(token.last_used_at) : 'Never'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-2">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => toggleTokenVisibility(token.id)}
+                            title={isVisible ? 'Hide token' : 'Show token'}
+                          >
+                            {isVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => handleCopyToken(token.token)}
+                            title="Copy token"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => handleDeleteToken(token.id)}
+                            title="Delete token"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
 

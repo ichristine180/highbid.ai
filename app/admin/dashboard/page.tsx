@@ -8,13 +8,19 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Users, Image, DollarSign, Activity, LogOut, Loader2, Settings } from 'lucide-react';
+import { Users, Image, DollarSign, Activity, LogOut, Loader2, Settings, Volume2 } from 'lucide-react';
 import { getUserStats, type UserData } from '@/lib/admin-actions';
 import { useToast } from '@/hooks/use-toast';
 
 interface PricingSetting {
   id: string;
   size_key: string;
+  price: number;
+  description: string;
+}
+
+interface TTSPricingSetting {
+  id: string;
   price: number;
   description: string;
 }
@@ -32,6 +38,9 @@ export default function AdminDashboard() {
   const [pricing, setPricing] = useState<PricingSetting[]>([]);
   const [pricingLoading, setPricingLoading] = useState(true);
   const [savingPricing, setSavingPricing] = useState(false);
+  const [ttsPricing, setTtsPricing] = useState<TTSPricingSetting | null>(null);
+  const [ttsPricingLoading, setTtsPricingLoading] = useState(true);
+  const [savingTtsPricing, setSavingTtsPricing] = useState(false);
 
   useEffect(() => {
     // Check if admin is authenticated
@@ -44,6 +53,7 @@ export default function AdminDashboard() {
     // Fetch user statistics and pricing
     fetchUserData();
     fetchPricing();
+    fetchTtsPricing();
   }, [router]);
 
   const fetchUserData = async () => {
@@ -68,6 +78,22 @@ export default function AdminDashboard() {
       console.error('Error fetching pricing:', error);
     } finally {
       setPricingLoading(false);
+    }
+  };
+
+  const fetchTtsPricing = async () => {
+    try {
+      const response = await fetch('/api/tts/pricing');
+      if (response.ok) {
+        const data = await response.json();
+        if (data.pricing && data.pricing.length > 0) {
+          setTtsPricing(data.pricing[0]);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching TTS pricing:', error);
+    } finally {
+      setTtsPricingLoading(false);
     }
   };
 
@@ -110,6 +136,48 @@ export default function AdminDashboard() {
       });
     } finally {
       setSavingPricing(false);
+    }
+  };
+
+  const handleTtsPriceChange = (newPrice: string) => {
+    const price = parseFloat(newPrice);
+    if (isNaN(price) || price < 0) return;
+
+    if (ttsPricing) {
+      setTtsPricing({ ...ttsPricing, price });
+    }
+  };
+
+  const handleSaveTtsPricing = async () => {
+    if (!ttsPricing) return;
+
+    setSavingTtsPricing(true);
+    try {
+      const response = await fetch('/api/tts/pricing', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ pricing: [ttsPricing] }),
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Success',
+          description: 'TTS pricing updated successfully',
+        });
+      } else {
+        throw new Error('Failed to update TTS pricing');
+      }
+    } catch (error) {
+      console.error('Error updating TTS pricing:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update TTS pricing',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingTtsPricing(false);
     }
   };
 
@@ -274,6 +342,74 @@ export default function AdminDashboard() {
                     )}
                   </Button>
                 </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* TTS Pricing Settings */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Volume2 className="h-5 w-5" />
+              Text-to-Speech Pricing
+            </CardTitle>
+            <CardDescription>
+              Set the cost per word for text-to-speech generation
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {ttsPricingLoading ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : ttsPricing ? (
+              <div className="space-y-6">
+                <div className="max-w-md space-y-2">
+                  <Label htmlFor="tts-price-per-word">
+                    Price Per Word
+                    <span className="text-xs text-muted-foreground block">
+                      Cost charged for each word in the text
+                    </span>
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">$</span>
+                    <Input
+                      id="tts-price-per-word"
+                      type="number"
+                      step="0.001"
+                      min="0"
+                      value={ttsPricing.price}
+                      onChange={(e) => handleTtsPriceChange(e.target.value)}
+                      className="w-full"
+                    />
+                    <span className="text-sm text-muted-foreground whitespace-nowrap">
+                      per word
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Example: At ${ttsPricing.price.toFixed(3)}/word, a 100-word text would cost ${(ttsPricing.price * 100).toFixed(2)}
+                  </p>
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    onClick={handleSaveTtsPricing}
+                    disabled={savingTtsPricing}
+                  >
+                    {savingTtsPricing ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      'Save TTS Pricing'
+                    )}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                No TTS pricing configured
               </div>
             )}
           </CardContent>

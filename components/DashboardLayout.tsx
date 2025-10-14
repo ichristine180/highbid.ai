@@ -16,7 +16,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
-import { Sparkles, Key, Wallet, LogOut, BookOpen } from 'lucide-react';
+import { Sparkles, Key, Wallet, LogOut, BookOpen, Volume2 } from 'lucide-react';
 
 const DashboardSidebar = () => {
   const { user } = useAuth();
@@ -24,6 +24,7 @@ const DashboardSidebar = () => {
 
   const userItems = [
     { title: 'Generate Images', url: '/dashboard/generate', icon: Sparkles },
+    { title: 'Text to speech', url: '/dashboard/tts', icon: Volume2 },
     { title: 'API', url: '/dashboard/api', icon: Key },
     { title: 'Balance & Top-up', url: '/dashboard/balance', icon: Wallet },
     { title: 'Documentation', url: '/docs', icon: BookOpen },
