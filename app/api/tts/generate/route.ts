@@ -1,125 +1,269 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
+import { authenticateRequest } from "@/lib/api-auth";
 
+// Constants
+const POLLING_CONFIG = {
+  INITIAL_DELAY: 30000, // 30 seconds
+  POLL_INTERVAL: 30000, // 30 seconds
+  MAX_ATTEMPTS: 15,
+} as const;
+
+const XGODO_API_BASE = "https://xgodo.com/api/v2";
+
+// Types
+interface JobTask {
+  _id: string;
+  worker_id: string;
+  job_id: string;
+  job_title: string;
+  status: "pending" | "running" | "completed" | "failed" | "declined";
+  comment?: string | null;
+  failureReason?: string | null;
+  job_proof?: string | null;
+  added: string;
+  updated: string;
+  planned_task?: string;
+}
+
+interface JobTasksResponse {
+  _id: string;
+  job_id: string;
+  title: string;
+  status: string;
+  total_task: number;
+  job_done: number;
+  pending_tasks: number;
+  satisfied_tasks: number;
+  declined_tasks: number;
+  failed_tasks: number;
+  job_tasks: JobTask[];
+}
+
+interface JobProof {
+  uploadedFileUrl: string;
+}
+
+interface TaskResult {
+  success: boolean;
+  message?: string;
+  audioUrl?: string;
+}
+
+const findRelevantTask = (tasks: JobTask[], textPrompt: string): JobTask | null => {
+  if (!tasks || tasks.length === 0) return null;
+
+  // Filter tasks that match the textPrompt
+  const matchingTasks = tasks.filter((task) => {
+    try {
+      if (task.planned_task) {
+        const plannedTaskObj = JSON.parse(task.planned_task);
+        return plannedTaskObj.textPrompt === textPrompt;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  });
+
+  if (matchingTasks.length === 0) return null;
+
+  // Sort by timestamp (most recent first) and return the newest
+  const sortedTasks = [...matchingTasks].sort(
+    (a, b) => new Date(b.added).getTime() - new Date(a.added).getTime()
+  );
+
+  return sortedTasks[0];
+};
+
+/**
+ * Parse and validate job proof data
+ */
+const parseJobProof = (jobProof: string | null | undefined): string | null => {
+  if (!jobProof) return null;
+
+  try {
+    const proofData: JobProof = JSON.parse(jobProof);
+    const url = proofData.uploadedFileUrl?.trim();
+    return url && url !== "" ? url : null;
+  } catch (error) {
+    console.error("Error parsing job_proof:", error);
+    return null;
+  }
+};
+
+/**
+ * Helper function to update generation status in database
+ */
+const updateGenerationStatus = async (
+  supabase: any,
+  generationId: string,
+  status: "generating" | "completed" | "failed",
+  audioUrl?: string,
+  errorMessage?: string
+) => {
+  const updateData: any = { status };
+
+  if (audioUrl) {
+    updateData.audio_url = audioUrl;
+  }
+
+  if (errorMessage) {
+    updateData.error_message = errorMessage;
+  }
+
+  return supabase
+    .from("tts_generations")
+    .update(updateData)
+    .eq("id", generationId);
+};
+
+/**
+ * Submit a TTS task to the Xgodo API
+ */
+const submitTTSTask = async (
+  jobId: string,
+  apiToken: string,
+  prompt: string
+): Promise<void> => {
+  const inputData = JSON.stringify({ textPrompt: prompt });
+
+  const response = await fetch(`${XGODO_API_BASE}/planned_tasks/submit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiToken}`,
+    },
+    body: JSON.stringify({
+      job_id: jobId,
+      inputs: [inputData],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to submit task: ${response.status}`);
+  }
+
+  await response.json();
+};
+
+/**
+ * Poll for task result with improved error handling and status checking
+ */
 const pollForTaskResult = async (
   jobId: string,
   apiToken: string,
-  maxAttempts = 15
-): Promise<string | { success: false; message: string }> => {
-  const initialDelay = 30000;
-  const pollInterval = 30000;
-  await new Promise((resolve) => setTimeout(resolve, initialDelay));
+  prompt:string,
+  maxAttempts = POLLING_CONFIG.MAX_ATTEMPTS
+): Promise<TaskResult> => {
+  // Initial delay before first poll
+  await new Promise((resolve) =>
+    setTimeout(resolve, POLLING_CONFIG.INITIAL_DELAY)
+  );
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      const response = await fetch("https://xgodo.com/api/v2/jobs/applicants", {
+      const response = await fetch(`${XGODO_API_BASE}/jobs/applicants`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiToken}`,
         },
-        body: JSON.stringify({
-          job_id: jobId,
-        }),
+        body: JSON.stringify({ job_id: jobId }),
       });
 
       if (!response.ok) {
+        console.error(`API request failed: ${response.status}`);
+        if (attempt < maxAttempts - 1) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, POLLING_CONFIG.POLL_INTERVAL)
+          );
+          continue;
+        }
         throw new Error(`Failed to fetch task result: ${response.status}`);
       }
 
-      const data = await response.json();
+      const data: JobTasksResponse = await response.json();
+
+      // Find the most relevant task
+      const task = findRelevantTask(data.job_tasks,prompt);
+
+      if (!task) {
+        console.warn(`Attempt ${attempt + 1}: No relevant task found`);
+        if (attempt < maxAttempts - 1) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, POLLING_CONFIG.POLL_INTERVAL)
+          );
+          continue;
+        }
+        return {
+          success: false,
+          message: "No task found for this generation",
+        };
+      }
+
       console.log(
-        "Applicants API Response (Attempt",
-        attempt + 1,
-        "):",
-        JSON.stringify(data, null, 2)
+        `Attempt ${attempt + 1}: Task ${task._id} status: ${task.status}`
       );
 
-      if (
-        data.job_tasks &&
-        Array.isArray(data.job_tasks) &&
-        data.job_tasks.length > 0
-      ) {
-        const task = data.job_tasks[0];
-        console.log("Task status:", task.status);
-        console.log("Task data:", JSON.stringify(task, null, 2));
+      // Handle failed or declined tasks
+      if (task.status === "failed" || task.status === "declined") {
+        const errorMessage =
+          task.comment ||
+          task.failureReason ||
+          "Task failed without specific error";
+        console.error(`Task ${task.status}:`, errorMessage);
 
-        // Check if the task has failed
-        if (task.status === "failed" || task.status === "declined") {
-          const errorMessage =
-            task.comment || task.failureReason || "Unknown error occurred";
-          console.log("Task failed/declined:", errorMessage);
+        return {
+          success: false,
+          message: "Speech generation failed. Please try again.",
+        };
+      }
+
+      // Handle completed tasks - check for audio URL
+      if (task.status === "pending" || task.status === "running") {
+        // Check if there's already a proof with audio URL (task completed but status not updated)
+        const audioUrl = parseJobProof(task.job_proof);
+        if (audioUrl) {
+          console.log(`Task completed with audio URL: ${audioUrl}`);
           return {
-            success: false,
-            message: `Speech generation failed,please try again`,
+            success: true,
+            audioUrl,
           };
         }
-        if (task.job_proof) {
-          try {
-            const proofData = JSON.parse(task.job_proof);
-            console.log("Parsed job_proof:", proofData);
-
-            if (proofData.audioUrl && proofData.audioUrl.trim() !== "") {
-              console.log("Found audioUrl:", proofData.audioUrl);
-              return proofData.audioUrl;
-            }
-          } catch (parseError) {
-            console.error("Error parsing job_proof:", parseError);
-          }
-        }
-      } else {
-        console.log("No job_tasks found or empty array");
       }
+
+      // Task is still in progress, continue polling
       if (attempt < maxAttempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve) =>
+          setTimeout(resolve, POLLING_CONFIG.POLL_INTERVAL)
+        );
       }
     } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes("Speech generation failed")
-      ) {
+      console.error(`Attempt ${attempt + 1} error:`, error);
+
+      // If it's a specific error we should propagate, throw it
+      if (error instanceof Error && error.message.includes("Failed to fetch task result")) {
         throw error;
       }
+
+      // Otherwise, continue polling if we have attempts left
       if (attempt < maxAttempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve) =>
+          setTimeout(resolve, POLLING_CONFIG.POLL_INTERVAL)
+        );
       }
     }
   }
 
-  throw new Error(
-    "Timeout: Speech generation took too long. Please try again."
-  );
+  return {
+    success: false,
+    message: "Speech generation timed out. Please try again.",
+  };
 };
 
 export async function POST(request: NextRequest) {
-  let supabaseResponse = NextResponse.next({
-    request,
-  });
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) =>
-            request.cookies.set(name, value)
-          );
-          supabaseResponse = NextResponse.next({
-            request,
-          });
-          cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options)
-          );
-        },
-      },
-    }
-  );
-
   let generationId: string | null = null;
+  let supabase: any = null;
 
   try {
     const { prompt } = await request.json();
@@ -131,14 +275,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get authenticated user
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    // Authenticate request (supports both API tokens and session cookies)
+    const authResult = await authenticateRequest(request);
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!authResult.authenticated || !authResult.user) {
+      return NextResponse.json(
+        { error: authResult.error || "Unauthorized" },
+        { status: 401 }
+      );
     }
+
+    const user = authResult.user;
+    // Use the supabase client from auth result (bypasses RLS for API token auth)
+    supabase = authResult.supabase;
 
     const JOB_ID = process.env.NEXT_PUBLIC_XGODO_AUDIO_JOB_ID;
     const API_TOKEN = process.env.NEXT_PUBLIC_XGODO_API_TOKEN;
@@ -205,117 +354,102 @@ export async function POST(request: NextRequest) {
     // Store generation ID for error handling
     generationId = generation.id;
 
-    const inputData = JSON.stringify({
-      textPrompt: prompt,
-    });
+    // Submit task to Xgodo API
+    try {
+      await submitTTSTask(JOB_ID, API_TOKEN, prompt);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to submit task";
 
-    const submitResponse = await fetch(
-      "https://xgodo.com/api/v2/planned_tasks/submit",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${API_TOKEN}`,
-        },
-        body: JSON.stringify({
-          job_id: JOB_ID,
-          inputs: [inputData],
-        }),
-      }
-    );
-
-    if (!submitResponse.ok) {
-      // Update generation record as failed
-      await supabase
-        .from("tts_generations")
-        .update({
-          status: "failed",
-          error_message: `Failed to submit task: ${submitResponse.status}`,
-        })
-        .eq("id", generation.id);
+      await updateGenerationStatus(
+        supabase,
+        generation.id,
+        "failed",
+        undefined,
+        errorMessage
+      );
 
       return NextResponse.json(
-        { error: `Failed to submit task: ${submitResponse.status}` },
-        { status: submitResponse.status }
+        { error: errorMessage },
+        { status: 500 }
       );
     }
 
-    await submitResponse.json();
-    const result = await pollForTaskResult(JOB_ID, API_TOKEN);
+    // Poll for task result
+    const result = await pollForTaskResult(JOB_ID, API_TOKEN,prompt);
 
-    if (typeof result === "object" && "success" in result && !result.success) {
-      // Update generation record as failed
-      await supabase
-        .from("tts_generations")
-        .update({
-          status: "failed",
-          error_message: result.message,
-        })
-        .eq("id", generation.id);
+    // Handle failed task result
+    if (!result.success) {
+      await updateGenerationStatus(
+        supabase,
+        generation.id,
+        "failed",
+        undefined,
+        result.message || "Unknown error occurred"
+      );
 
       return NextResponse.json(
         {
           success: false,
-          message: result.message,
+          message: result.message || "Speech generation failed",
         },
         { status: 200 }
       );
     }
 
-    if (result && typeof result === "string") {
-      // Update generation record as completed
-      await supabase
-        .from("tts_generations")
-        .update({
-          status: "completed",
-          audio_url: result,
-        })
-        .eq("id", generation.id);
+    // Handle successful task result
+    if (result.audioUrl) {
+      await updateGenerationStatus(
+        supabase,
+        generation.id,
+        "completed",
+        result.audioUrl
+      );
 
       return NextResponse.json({
         success: true,
-        audioUrl: result,
+        audioUrl: result.audioUrl,
         generation_id: generation.id,
       });
-    } else {
-      // Update generation record as failed
-      await supabase
-        .from("tts_generations")
-        .update({
-          status: "failed",
-          error_message: "No audio URL found in response",
-        })
-        .eq("id", generation.id);
-
-      return NextResponse.json(
-        { error: "No audio URL found in response" },
-        { status: 500 }
-      );
     }
-  } catch (error) {
-    console.error("Error generating audio:", error);
 
-    // Update generation record as failed if it was created
-    if (generationId) {
-      await supabase
-        .from("tts_generations")
-        .update({
-          status: "failed",
-          error_message:
-            error instanceof Error
-              ? error.message
-              : "Failed to generate audio. Please try again.",
-        })
-        .eq("id", generationId);
-    }
+    // Edge case: success but no audio URL
+    await updateGenerationStatus(
+      supabase,
+      generation.id,
+      "failed",
+      undefined,
+      "No audio URL returned from service"
+    );
 
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to generate audio. Please try again.",
+        success: false,
+        message: "No audio URL found in response",
       },
+      { status: 500 }
+    );
+  } catch (error) {
+    console.error("Error generating audio:", error);
+
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : "Failed to generate audio. Please try again.";
+
+    // Update generation record as failed if it was created
+    if (generationId) {
+      await updateGenerationStatus(
+        supabase,
+        generationId,
+        "failed",
+        undefined,
+        errorMessage
+      );
+    }
+
+    return NextResponse.json(
+      { error: errorMessage },
       { status: 500 }
     );
   }
