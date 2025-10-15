@@ -305,43 +305,14 @@ export default function TextToSpeech() {
         setProgressMessage("Complete!");
         setGeneratedAudio(data.audioUrl);
 
-        // Charge the user
+        // Note: Charging is now handled automatically by the API
         const actualCost = data.cost || estimatedCost;
-        try {
-          const chargeResponse = await fetch("/api/charge", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              amount: actualCost,
-              description: `Text-to-speech generation`,
-              generation_id: data.generation_id || null,
-            }),
-          });
+        toast({
+          title: "Success",
+          description: `Audio generated successfully! $${actualCost.toFixed(2)} charged.`,
+        });
 
-          if (chargeResponse.ok) {
-            const chargeData = await chargeResponse.json();
-            setUserBalance(chargeData.newBalance);
-            toast({
-              title: "Success",
-              description: `Audio generated successfully! $${actualCost.toFixed(2)} charged.`,
-            });
-          } else {
-            toast({
-              title: "Success",
-              description: "Audio generated successfully!",
-            });
-          }
-        } catch (chargeError) {
-          console.error("Error charging user:", chargeError);
-          toast({
-            title: "Success",
-            description: "Audio generated successfully!",
-          });
-        }
-
-        // Refresh balance
+        // Refresh balance to reflect the charge
         fetchUserBalance();
       } else {
         throw new Error("No audio URL found in response");

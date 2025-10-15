@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
+import { createClient } from "@supabase/supabase-js";
 
 // Constants
 const POLLING_CONFIG = {
@@ -118,6 +119,67 @@ const updateGenerationStatus = async (
 };
 
 /**
+ * Helper function to charge user for TTS generation
+ */
+const chargeUser = async (
+  userId: string,
+  amount: number,
+  description: string,
+  generationId: string
+): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!supabaseServiceKey) {
+      console.error("Service role key not configured");
+      return { success: false, error: "Service configuration error" };
+    }
+
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      supabaseServiceKey
+    );
+
+    // Update user balance using the database function
+    const { data: newBalance, error: balanceError } = await supabaseAdmin.rpc(
+      "update_user_balance",
+      {
+        p_user_id: userId,
+        p_amount: amount,
+        p_operation: "subtract",
+      }
+    );
+
+    if (balanceError) {
+      console.error("Error updating balance:", balanceError);
+      return { success: false, error: "Failed to update balance" };
+    }
+
+    // Record the transaction
+    const { error: transactionError } = await supabaseAdmin
+      .from("transactions")
+      .insert({
+        user_id: userId,
+        type: "debit",
+        amount: amount,
+        description: description,
+        payment_id: generationId,
+        status: "completed",
+        created_at: new Date().toISOString(),
+      });
+
+    if (transactionError) {
+      console.error("Error recording transaction:", transactionError);
+      // Don't fail if transaction recording fails, balance was already deducted
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error in chargeUser:", error);
+    return { success: false, error: "Failed to charge user" };
+  }
+};
+
+/**
  * Submit a TTS task to the Xgodo API
  */
 const submitTTSTask = async (
@@ -152,7 +214,7 @@ const submitTTSTask = async (
 const pollForTaskResult = async (
   jobId: string,
   apiToken: string,
-  prompt:string,
+  prompt: string,
   maxAttempts = POLLING_CONFIG.MAX_ATTEMPTS
 ): Promise<TaskResult> => {
   // Initial delay before first poll
@@ -331,6 +393,28 @@ export async function POST(request: NextRequest) {
     const wordCount = prompt.trim().split(/\s+/).length;
     const cost = pricePerWord * wordCount;
 
+    // Check user balance before generation
+    const { data: balanceData, error: balanceError } = await supabase
+      .from("user_balances")
+      .select("balance")
+      .eq("user_id", user.id)
+      .single();
+
+    const currentBalance = balanceData?.balance || 0;
+
+    if (balanceError && balanceError.code !== "PGRST116") {
+      console.error("Error fetching balance:", balanceError);
+    }
+
+    if (currentBalance < cost) {
+      return NextResponse.json(
+        {
+          error: `Insufficient balance. You need $${cost.toFixed(2)} but only have $${currentBalance.toFixed(2)}. Please top up your account.`,
+        },
+        { status: 402 }
+      );
+    }
+
     // Create initial generation record
     const { data: generation, error: insertError } = await supabase
       .from("tts_generations")
@@ -406,10 +490,25 @@ export async function POST(request: NextRequest) {
         result.audioUrl
       );
 
+      // Charge the user for successful generation
+      const chargeResult = await chargeUser(
+        user.id,
+        cost,
+        `Text-to-speech generation (${wordCount} words)`,
+        generation.id
+      );
+
+      if (!chargeResult.success) {
+        console.error("Failed to charge user:", chargeResult.error);
+        // Note: Audio was generated successfully, but charging failed
+        // Log this for manual review
+      }
+
       return NextResponse.json({
         success: true,
         audioUrl: result.audioUrl,
         generation_id: generation.id,
+        cost: cost, // Return cost for client info
       });
     }
 

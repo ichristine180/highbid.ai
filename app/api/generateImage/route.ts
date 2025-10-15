@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
+import { createClient } from "@supabase/supabase-js";
 
 // Constants
 const POLLING_CONFIG = {
@@ -120,6 +121,67 @@ const updateGenerationStatus = async (
     .from("image_generations")
     .update(updateData)
     .eq("id", generationId);
+};
+
+/**
+ * Helper function to charge user for image generation
+ */
+const chargeUser = async (
+  userId: string,
+  amount: number,
+  description: string,
+  generationId: string
+): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!supabaseServiceKey) {
+      console.error("Service role key not configured");
+      return { success: false, error: "Service configuration error" };
+    }
+
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      supabaseServiceKey
+    );
+
+    // Update user balance using the database function
+    const { data: newBalance, error: balanceError } = await supabaseAdmin.rpc(
+      "update_user_balance",
+      {
+        p_user_id: userId,
+        p_amount: amount,
+        p_operation: "subtract",
+      }
+    );
+
+    if (balanceError) {
+      console.error("Error updating balance:", balanceError);
+      return { success: false, error: "Failed to update balance" };
+    }
+
+    // Record the transaction
+    const { error: transactionError } = await supabaseAdmin
+      .from("transactions")
+      .insert({
+        user_id: userId,
+        type: "debit",
+        amount: amount,
+        description: description,
+        payment_id: generationId,
+        status: "completed",
+        created_at: new Date().toISOString(),
+      });
+
+    if (transactionError) {
+      console.error("Error recording transaction:", transactionError);
+      // Don't fail if transaction recording fails, balance was already deducted
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error in chargeUser:", error);
+    return { success: false, error: "Failed to charge user" };
+  }
 };
 
 /**
@@ -335,6 +397,28 @@ export async function POST(request: NextRequest) {
       cost = parseFloat(pricingData.price.toString());
     }
 
+    // Check user balance before generation
+    const { data: balanceData, error: balanceError } = await supabase
+      .from("user_balances")
+      .select("balance")
+      .eq("user_id", user.id)
+      .single();
+
+    const currentBalance = balanceData?.balance || 0;
+
+    if (balanceError && balanceError.code !== "PGRST116") {
+      console.error("Error fetching balance:", balanceError);
+    }
+
+    if (currentBalance < cost) {
+      return NextResponse.json(
+        {
+          error: `Insufficient balance. You need $${cost.toFixed(2)} but only have $${currentBalance.toFixed(2)}. Please top up your account.`,
+        },
+        { status: 402 }
+      );
+    }
+
     // Create initial generation record
     const { data: generation, error: insertError } = await supabase
       .from("image_generations")
@@ -411,6 +495,20 @@ export async function POST(request: NextRequest) {
         "completed",
         result.imageUrl
       );
+
+      // Charge the user for successful generation
+      const chargeResult = await chargeUser(
+        user.id,
+        cost,
+        `Image generation (${size})`,
+        generation.id
+      );
+
+      if (!chargeResult.success) {
+        console.error("Failed to charge user:", chargeResult.error);
+        // Note: Image was generated successfully, but charging failed
+        // Log this for manual review
+      }
 
       return NextResponse.json({
         success: true,

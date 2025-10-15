@@ -376,44 +376,14 @@ export default function Generate() {
         setProgressMessage("Complete!");
         setGeneratedImage(data.imageUrl);
 
-        // Charge the user
+        // Note: Charging is now handled automatically by the API
         const currentPrice = getCurrentPrice();
-        try {
-          const chargeResponse = await fetch("/api/charge", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              amount: currentPrice,
-              description: `Image generation (${size})`,
-              generation_id: data.generation_id || null,
-            }),
-          });
+        toast({
+          title: "Success",
+          description: `Image generated successfully! $${currentPrice.toFixed(2)} charged.`,
+        });
 
-          if (chargeResponse.ok) {
-            const chargeData = await chargeResponse.json();
-            setUserBalance(chargeData.newBalance);
-            toast({
-              title: "Success",
-              description: `Image generated successfully! $${currentPrice.toFixed(2)} charged.`,
-            });
-          } else {
-            toast({
-              title: "Success",
-              description: "Image generated successfully!",
-            });
-          }
-        } catch (chargeError) {
-          console.error("Error charging user:", chargeError);
-          // Still show success for image generation
-          toast({
-            title: "Success",
-            description: "Image generated successfully!",
-          });
-        }
-
-        // Refresh balance
+        // Refresh balance to reflect the charge
         fetchUserBalance();
       } else {
         throw new Error("No image URL found in response");
