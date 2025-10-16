@@ -50,15 +50,17 @@ interface TaskResult {
   audioUrl?: string;
 }
 
-const findRelevantTask = (tasks: JobTask[], textPrompt: string): JobTask | null => {
+const findRelevantTask = (tasks: JobTask[], speechPrompt: string): JobTask | null => {
   if (!tasks || tasks.length === 0) return null;
 
-  // Filter tasks that match the textPrompt
+  // Filter tasks that match the speechPrompt
   const matchingTasks = tasks.filter((task) => {
     try {
       if (task.planned_task) {
+        
+        
         const plannedTaskObj = JSON.parse(task.planned_task);
-        return plannedTaskObj.textPrompt === textPrompt;
+        return plannedTaskObj.speechPrompt === speechPrompt;
       }
       return false;
     } catch (e) {
@@ -187,7 +189,7 @@ const submitTTSTask = async (
   apiToken: string,
   prompt: string
 ): Promise<void> => {
-  const inputData = JSON.stringify({ textPrompt: prompt });
+  const inputData = JSON.stringify({ speechPrompt: prompt });
 
   const response = await fetch(`${XGODO_API_BASE}/planned_tasks/submit`, {
     method: "POST",
